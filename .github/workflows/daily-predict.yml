@@ -1,0 +1,81 @@
+name: NHL ledger (grade + snapshot)
+
+# The odds-pull workflow already snapshots the ledger right after each board
+# purchase (10 AM / 4 PM ET). This one covers the two things it can't:
+#   08:17 UTC = 4:17 AM ET  grade last night (every game is final by then)
+#   22:23 UTC = 6:23 PM ET  last pre-puck-drop snapshot for 7 PM games, so a
+#                           lineup scratch or a late line move after 4 PM lands
+#                           (no credits: it re-prices the 4 PM board)
+# The real trigger is Supabase pg_cron (nhl-ledger-grade / nhl-ledger-final,
+# db/002_nhl_cron_dispatch.sql), which dispatches this on the minute; the
+# `schedule:` below is a free backstop. GitHub delays scheduled runs; a late
+# 6:23 run only skips games already started — daily-predict never rewrites a
+# started game.
+on:
+  # Production runs this on a cron schedule. The public copy is manual-only,
+  # so a fork without secrets never fires it.
+  workflow_dispatch:
+    inputs:
+      date:
+        description: 'Slate date YYYY-MM-DD (blank = today ET)'
+        required: false
+        default: ''
+      grade_only:
+        description: 'Grade only (write no new rows)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read   # actions/checkout
+  issues: write    # self-alert step
+
+concurrency:
+  group: nhl-ledger
+  cancel-in-progress: false
+
+jobs:
+  ledger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          check-latest: true   # runner cache lags security releases
+      - name: Grade + predict
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          DATE_IN: ${{ github.event.inputs.date }}
+          GRADE_ONLY: ${{ github.event.inputs.grade_only == 'true' || github.event.schedule == '17 8 * * *' }}
+        run: |
+          ARGS=""
+          [ -n "$DATE_IN" ] && ARGS="--date $DATE_IN"
+          [ "$GRADE_ONLY" = "true" ] && ARGS="$ARGS --grade-only"
+          node scripts/daily-predict.mjs $ARGS
+
+      # The lab header's "model" time (db/lab_header.sql in the NFL repo). Not
+      # for a grade-only run: grading changes no prediction.
+      - name: Log the model run for the header
+        if: github.event.inputs.grade_only != 'true' && github.event.schedule != '17 8 * * *'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: >
+          curl -fsS -X POST "$SUPABASE_URL/rest/v1/lab_runs"
+          -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY"
+          -H "Content-Type: application/json" -d "{\"lab\":\"nhl\",\"run_url\":\"$RUN_URL\"}"
+      - name: Self-alert on failure
+        if: failure() || cancelled()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          TITLE="🚨 Scheduled workflow failing: NHL ledger"
+          EXISTING=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "in:title \"$TITLE\"" --json number,title --jq ".[] | select(.title == \"$TITLE\") | .number" | head -1)
+          BODY="[NHL ledger]($RUN_URL) failed at $(date -u +%Y-%m-%dT%H:%M:%SZ)."
+          if [ -n "$EXISTING" ]; then gh issue comment "$EXISTING" --repo "$GITHUB_REPOSITORY" --body "$BODY"
+          else gh issue create --repo "$GITHUB_REPOSITORY" --title "$TITLE" --body "$BODY"; fi

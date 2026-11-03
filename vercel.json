@@ -1,0 +1,19 @@
+{
+  "framework": null,
+  "buildCommand": "echo 'static — no build'",
+  "outputDirectory": "public",
+  "rewrites": [
+    { "source": "/legacy-api/:path*", "destination": "/api/proxy?base=legacy&path=:path*" },
+    { "source": "/espn-api/:path*",   "destination": "/api/proxy?base=espn&path=:path*" },
+    { "source": "/api/:path*",        "destination": "/api/proxy?base=modern&path=:path*" }
+  ],
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" },
+        { "key": "Pragma", "value": "no-cache" }
+      ]
+    }
+  ]
+}

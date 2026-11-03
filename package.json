@@ -1,0 +1,16 @@
+{
+  "name": "nhl-research-dashboard",
+  "version": "1.0.0",
+  "description": "NHL player research dashboard: shots, goals, assists and points projections with a graded ledger",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "test": "node --test scripts/*.test.mjs",
+    "predict:dry": "node scripts/daily-predict.mjs --dry-run"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "node-fetch": "^2.7.0"
+  }
+}

@@ -1,0 +1,28 @@
+Copyright (c) 2026 bennettschiff. All rights reserved.
+
+This software and its associated documentation, data, models, and derived
+outputs (collectively, the "Software") are proprietary. The source is
+published for viewing and evaluation only (for example, by a prospective
+employer reading it on GitHub).
+
+No license, express or implied, is granted to any person or entity. Without
+the prior written permission of the copyright holder, you may not use, copy,
+reproduce, modify, adapt, merge, publish, distribute, sublicense, sell, lease,
+transmit, host, reverse engineer, decompile, or create derivative works from
+the Software, in whole or in part, by any means and in any form.
+
+Possession of a copy of the Software, including any copy obtained from a
+compiled, bundled, minified, or publicly served artifact, does not grant any
+right to use it. Unauthorized use is prohibited.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Nothing in this notice is a claim of ownership over third-party data accessed
+by the Software (including league statistics providers and The Odds API
+content), which remains subject to its own providers' terms.

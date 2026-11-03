@@ -1,0 +1,10 @@
+node_modules/
+.odds-cache.json
+.env
+.vercel
+scripts/cache/
+.env.local
+backup-out/
+
+
+public/config.js

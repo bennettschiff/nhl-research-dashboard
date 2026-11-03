@@ -1,0 +1,10 @@
+{
+  "version": "public-1",
+  "note": "Illustrative gates for the public build. Production gates are set weekly from the graded ledger and are private.",
+  "gates": {
+    "points":  { "status": "probation", "sides": ["over", "under"], "min": 0.05, "max": 0.35 },
+    "goals":   { "status": "probation", "sides": ["over", "under"], "min": 0.05, "max": 0.35 },
+    "assists": { "status": "probation", "sides": ["over", "under"], "min": 0.05, "max": 0.35 },
+    "sog":     { "status": "probation", "sides": ["over", "under"], "min": 0.05, "max": 0.35 }
+  }
+}

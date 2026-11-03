@@ -1,0 +1,121 @@
+name: NHL odds pull
+
+# Buys tonight's NHL player-prop board and stores it in public.nhl_event_odds
+# (SERVE Supabase). nhl.schiffpicks.com reads those rows — the page itself never
+# calls The Odds API, so traffic costs 0 credits.
+#
+# ── SCHEDULE (cron is UTC; ET shown is DST) ──────────────────────────────────
+#   14:07 UTC = 10:07 AM ET · the day's board
+#   20:07 UTC =  4:07 PM ET · refresh before puck drop (late-posted props, moved
+#                             lines); games already started are skipped
+# The real trigger is Supabase pg_cron (jobs nhl-odds-am / nhl-odds-pm,
+# db/002_nhl_cron_dispatch.sql): it fires on the minute and POSTs a
+# workflow_dispatch, which GitHub starts within seconds. The `schedule:` below is
+# only a backstop — GitHub delivers scheduled runs hours late (14:07 landed at
+# 19:10 on 10-02 and never came by 17:48 on 10-03) — so it runs with
+# --skip-fresher-than 360: a late backstop finds the board pg_cron already
+# bought and spends nothing.
+#
+# ── COST ─────────────────────────────────────────────────────────────────────
+# ≤ 8 credits per game per run (8 markets, 4 books in one bookmakers= group).
+# Two runs/day ≈ 16/game → ~700 in a 43-game week, ~2,800/month, against the
+# 20,000/mo key SHARED with the MLB, WNBA and NFL labs. The script refuses to
+# drop the account below --reserve (3000, same floor as the NFL pull) and logs
+# every run to public.odds_credit_log as `nhl_live`.
+
+on:
+  # Production runs this on a cron schedule. The public copy is manual-only,
+  # so a fork without secrets never fires it.
+  workflow_dispatch:
+    inputs:
+      date:
+        description: 'Slate date YYYY-MM-DD (blank = today ET)'
+        required: false
+        default: ''
+      live:
+        description: 'Buy the odds (unchecked = dry run, 0 credits)'
+        type: boolean
+        default: true
+      fresh:
+        description: 'Skip games priced within this many minutes (the header Model Refresh sends 15)'
+        required: false
+        default: '90'
+
+permissions:
+  contents: read   # actions/checkout
+  issues: write    # self-alert step
+
+concurrency:
+  group: nhl-odds-pull
+  cancel-in-progress: false
+
+jobs:
+  pull:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          check-latest: true   # runner cache lags security releases
+
+      # 0 credits: /events is free. Prints the slate and the exact ceiling next
+      # to the run that acts on it.
+      - name: Plan (dry run, 0 credits)
+        env:
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          DATE_IN: ${{ github.event.inputs.date }}
+        run: node scripts/pull_nhl_odds.mjs ${DATE_IN:+--date "$DATE_IN"}
+
+      - name: Pull
+        if: github.event_name == 'schedule' || github.event.inputs.live == 'true'
+        env:
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          DATE_IN: ${{ github.event.inputs.date }}
+          # Backstop only: skip anything pg_cron's dispatch priced in the last 6h.
+          FRESH: ${{ github.event_name == 'schedule' && '360' || github.event.inputs.fresh || '90' }}
+        run: node scripts/pull_nhl_odds.mjs --live --skip-fresher-than "$FRESH" ${DATE_IN:+--date "$DATE_IN"}
+
+      # Snapshot the ledger against the board just bought. Chained here, not on
+      # its own cron, because GitHub runs scheduled jobs hours late: a separate
+      # predict cron could fire before this pull and price an empty board.
+      # Only games that have not started are written (daily-predict.mjs).
+      - name: Ledger snapshot (grade + predict)
+        if: github.event_name == 'schedule' || github.event.inputs.live == 'true'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          DATE_IN: ${{ github.event.inputs.date }}
+        run: node scripts/daily-predict.mjs ${DATE_IN:+--date "$DATE_IN"}
+
+      # The lab header's "model" time: lab_status() in the shared Supabase
+      # (db/lab_header.sql in the NFL repo) reads the newest lab_runs row.
+      - name: Log the model run for the header
+        if: github.event_name == 'schedule' || github.event.inputs.live == 'true'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: >
+          curl -fsS -X POST "$SUPABASE_URL/rest/v1/lab_runs"
+          -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY"
+          -H "Content-Type: application/json" -d "{\"lab\":\"nhl\",\"run_url\":\"$RUN_URL\"}"
+
+      - name: Self-alert on failure
+        if: failure() || cancelled()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          TITLE="🚨 Scheduled workflow failing: NHL odds pull"
+          EXISTING=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "in:title \"$TITLE\"" --json number,title --jq ".[] | select(.title == \"$TITLE\") | .number" | head -1)
+          BODY="[NHL odds pull]($RUN_URL) failed at $(date -u +%Y-%m-%dT%H:%M:%SZ)."
+          if [ -n "$EXISTING" ]; then gh issue comment "$EXISTING" --repo "$GITHUB_REPOSITORY" --body "$BODY"
+          else gh issue create --repo "$GITHUB_REPOSITORY" --title "$TITLE" --body "$BODY"; fi

@@ -1,0 +1,83 @@
+name: Nightly Supabase → Drive backup (NHL)
+
+# 08:47 UTC = 4:47 AM ET, after the 4:17 grading pass, plus a 16:13 UTC
+# backstop (a dropped scheduled run never starts, so it can't fail or alert;
+# a second cron at a different hour is the retry). Re-running is harmless:
+# the ledger dump overwrites today's folder and rclone skips unchanged odds files.
+#   gdrive:nhl-props-lab-backups/<date>/nhl_picks.json.gz   full ledger
+#   gdrive:nhl-props-lab-archive/odds/nhl_event_odds_<d>.json.gz   each slate's
+#     raw odds board, kept forever; once a slate is on Drive and over a day
+#     old, the prune step below removes it from Supabase
+# Needs the RCLONE_CONF secret: the same rclone config (user OAuth) the MLB,
+# NFL and WNBA labs use. Never a Google service account — SA uploads count
+# against the SA's own 15 GB quota.
+on:
+  # Production runs this on a cron schedule. The public copy is manual-only,
+  # so a fork without secrets never fires it.
+  workflow_dispatch:
+
+permissions:
+  contents: read   # actions/checkout
+  issues: write    # self-alert step
+
+concurrency:
+  group: nhl-backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          check-latest: true   # runner cache lags security releases
+      # Third-party apt sources on the runner image have broken `apt-get update`
+      # before (MLB/WNBA labs, 2026-08-29); drop them, fall back to rclone's .deb.
+      - name: Install rclone
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list /etc/apt/sources.list.d/microsoft.list
+          if sudo apt-get update -qq && sudo apt-get install -y -qq rclone; then rclone version
+          else
+            curl -fsSL https://downloads.rclone.org/rclone-current-linux-amd64.deb -o /tmp/rclone.deb
+            sudo dpkg -i /tmp/rclone.deb && rclone version
+          fi
+      - name: Configure rclone
+        env:
+          RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
+        run: |
+          if [ -z "$RCLONE_CONF" ]; then echo "::error::RCLONE_CONF secret is not set on this repo"; exit 1; fi
+          mkdir -p ~/.config/rclone
+          printf '%s' "$RCLONE_CONF" > ~/.config/rclone/rclone.conf
+      - name: Dump tables
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: node scripts/backup-to-drive.mjs --out-dir backup-out
+      - name: Upload to Google Drive
+        run: |
+          rclone copy backup-out/ledger "gdrive:nhl-props-lab-backups/$(date -u +%F)" -v
+          rclone copy backup-out/odds "gdrive:nhl-props-lab-archive/odds" -v
+      # Only after the upload, and only for slates whose file is on Drive at the
+      # size this run wrote (scripts/prune-archived-odds.mjs). Today and
+      # yesterday stay; the page and daily-predict read today's board alone.
+      - name: Prune archived odds boards from Supabase
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          rclone lsf --format ps --separator ';' "gdrive:nhl-props-lab-archive/odds" > drive-odds.txt
+          node scripts/prune-archived-odds.mjs --out-dir backup-out --drive-list drive-odds.txt --write
+      - name: Self-alert on failure
+        if: failure() || cancelled()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          TITLE="🚨 Scheduled workflow failing: NHL backup"
+          EXISTING=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "in:title \"$TITLE\"" --json number,title --jq ".[] | select(.title == \"$TITLE\") | .number" | head -1)
+          BODY="[NHL backup]($RUN_URL) failed at $(date -u +%Y-%m-%dT%H:%M:%SZ)."
+          if [ -n "$EXISTING" ]; then gh issue comment "$EXISTING" --repo "$GITHUB_REPOSITORY" --body "$BODY"
+          else gh issue create --repo "$GITHUB_REPOSITORY" --title "$TITLE" --body "$BODY"; fi
